@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<title>Node Kinect2 Client</title>
+	<link rel="stylesheet" href="">
+	<style type="text/css">
+		div#c1 {
+		    padding-left: 320px;
+		    padding-bottom: 100px;
+		    padding-top: 50px;
+		}
+		div#c2 {
+		    padding-left: 100px;
+		}
+
+		#depthCanvas {
+		    padding-right: 100px;
+		}
+	</style>
+</head>
+<body>
+	<div id="c1">
+		<canvas id="colorCanvas" width="640" height="360"></canvas>
+		<canvas id="bodyCanvas" width="512" height="424"></canvas>
+	</div>
+	<!--<div id="c2">
+		<canvas id="depthCanvas" width="512" height="424"></canvas>
+		<canvas id="infraredCanvas" width="512" height="424"></canvas>
+	</div>-->
+	<script src="/socket.io/socket.io.js"></script>
+	<script>
+		var socket = io.connect('/');
+		var canvas = document.getElementById('colorCanvas');
+		var ctx = canvas.getContext('2d');
+		var flag = false;
+		wait = false;
+		var colorProcessing = false;
+		var colorWorkerThread = new Worker("js/colorWorker.js");
+
+		var bodyCanvas = document.getElementById('bodyCanvas');
+		var bctx = bodyCanvas.getContext('2d');
+		var colors = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#00ffff', '#ff00ff'];
+
+		// handstate circle size
+		var HANDSIZE = 20;
+
+		// closed hand state color
+		var HANDCLOSEDCOLOR = "red";
+
+		// open hand state color
+		var HANDOPENCOLOR = "green";
+
+		// lasso hand state color
+		var HANDLASSOCOLOR = "blue";
+
+		function updateHandState(handState, jointPoint) {
+			switch (handState) {
+				case 3:
+					drawHand(jointPoint, HANDCLOSEDCOLOR);
+				break;
+
+				case 2:
+					drawHand(jointPoint, HANDOPENCOLOR);
+				break;
+
+				case 4:
+					drawHand(jointPoint, HANDLASSOCOLOR);
+				break;
+			}
+		}
+
+		function drawHand(jointPoint, handColor) {
+			// draw semi transparent hand cicles
+			bctx.globalAlpha = 0.75;
+			bctx.beginPath();
+			bctx.fillStyle = handColor;
+			bctx.arc(jointPoint.depthX * 512, jointPoint.depthY * 424, HANDSIZE, 0, Math.PI * 2, true);
+			bctx.fill();
+			bctx.closePath();
+			bctx.globalAlpha = 1;
+		}
+
+		socket.on('bodyFrame', function(bodyFrame){
+			//flag = false;
+			//console.log("bodyFrame detected");
+			bctx.clearRect(0, 0, bodyCanvas.width, bodyCanvas.height);
+			var index = 0;
+				for(var i = 0;  i < bodyFrame.bodies.length; i++) {
+				if(bodyFrame.bodies[i].tracked) {
+					//console.log('body tracked');
+					body = bodyFrame.bodies[i];
+					for(var jointType in body.joints) {
+						var joint = body.joints[jointType];
+						//console.log(joint);
+						ctx.fillStyle = colors[index];
+						ctx.fillRect(joint.depthX * 512, joint.depthY * 424, 10, 10);
+					}
+					//draw hand states
+					updateHandState(body.leftHandState, body.joints[7]);
+					updateHandState(body.rightHandState, body.joints[11]);
+					flag = true;
+					break;
+					index++;				
+				}
+				}
+		});
+		
+		colorWorkerThread.addEventListener("message", function (event) {
+			if(event.data.message === 'imageReady') {
+                ctx.putImageData(event.data.imageData, 0, 0);
+                console.log("wait = ",wait);
+                console.log("flag = ",flag);
+                if(flag && !wait){
+                	flag = false;
+                	wait = true;
+            		console.log("Sending a snapshot");
+				    canvas.toBlob(function(blob){
+				    var form = new FormData(),
+				        request = new XMLHttpRequest();
+				    form.append("image", blob, "filename.png");
+				    request.open("POST", "/upload", true);
+				    request.send(form);
+					}, "image/png");
+	            }
+
+                colorProcessing = false;
+			}
+		});
+
+		colorWorkerThread.postMessage({
+			"message": "setImageData",
+			"imageData": ctx.createImageData(canvas.width, canvas.height)
+		});
+
+		socket.on('colorFrame', function(imageBuffer){
+			if(!colorProcessing) {
+				colorProcessing = true;
+				colorWorkerThread.postMessage({ "message": "processImageData", "imageBuffer": imageBuffer });
+			}
+		});
+
+		//var dsocket = io.connect('/');
+		/*var dcanvas = document.getElementById('depthCanvas');
+		var dctx = dcanvas.getContext('2d');
+
+		var dimageProcessing = false;
+		var dimageWorkerThread = new Worker("js/GrayscaleImageWorker.js");
+		
+		dimageWorkerThread.addEventListener("message", function (event) {
+			if(event.data.message === 'imageReady') {
+                dctx.putImageData(event.data.imageData, 0, 0);
+                dimageProcessing = false;
+			}
+		});
+
+		dimageWorkerThread.postMessage({
+			"message": "setImageData",
+			"imageData": dctx.createImageData(dcanvas.width, dcanvas.height)
+		});
+
+		socket.on('depthFrame', function(imageBuffer){
+			if(!dimageProcessing) {
+				dimageProcessing = true;
+				dimageWorkerThread.postMessage({ "message": "processImageData", "imageBuffer": imageBuffer });
+			}
+		});
+
+
+		var ircanvas = document.getElementById('infraredCanvas');
+		var irctx = ircanvas.getContext('2d');
+
+		var irimageProcessing = false;
+		var irimageWorkerThread = new Worker("js/GrayscaleImageWorker.js");
+		
+		irimageWorkerThread.addEventListener("message", function (event) {
+			if(event.data.message === 'imageReady') {
+                irctx.putImageData(event.data.imageData, 0, 0);
+                irimageProcessing = false;
+			}
+		});
+
+		irimageWorkerThread.postMessage({
+			"message": "setImageData",
+			"imageData": irctx.createImageData(ircanvas.width, ircanvas.height)
+		});
+
+		socket.on('infraredFrame', function(imageBuffer){
+			if(!irimageProcessing) {
+				irimageProcessing = true;
+				irimageWorkerThread.postMessage({ "message": "processImageData", "imageBuffer": imageBuffer });
+			}
+		});*/
+		
+	</script>
+
+</body>
+</html>
